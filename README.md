@@ -1,0 +1,1 @@
+This project basically sends Forex economic event update straight to your google calendar
