@@ -12,7 +12,7 @@ def get_forex_events():
     
     # "Headless" mode means the browser runs in the background (invisible).
     # If you want to see it work, comment out the next line.
-    #chrome_options.add_argument("--headless") 
+    chrome_options.add_argument("--headless") 
     
     # These arguments make it more stable on servers/Windows
     chrome_options.add_argument("--disable-gpu")
