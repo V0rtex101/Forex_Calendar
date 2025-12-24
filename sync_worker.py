@@ -8,16 +8,16 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
-# Import scraper function
+# Import scraper function (kept as get_data per your code)
 from get_data import get_forex_events
 
+# Load environment variables
 dotenv.load_dotenv()
 
 # --- CONFIGURATION ---
 DB_FILE = os.environ.get('DB_FILE')
 CLIENT_ID = os.environ.get('CLIENT_ID')
 CLIENT_SECRET = os.environ.get('CLIENT_SECRET')
-
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,22 +31,53 @@ def get_db_connection():
 def generate_event_id(event_data):
     """
     Creates a unique, consistent ID for Google Calendar.
-    Google IDs must be lowercase a-v and 0-9.
-    Format: yyyymmdd + currency + simplified_title
-    Example: 20251223usdcpidata
+    CRITICAL: Google ONLY allows characters 0-9 and a-v. 
+    Letters w, x, y, z are FORBIDDEN and will cause Error 400.
     """
-    # 1. Clean the title (remove spaces/symbols, keep only letters/numbers)
-    clean_title = re.sub(r'[^a-z0-9]', '', event_data['event'].lower())
+    # 1. Clean the title: Remove anything that is NOT a-v or 0-9
+    # We change the regex from a-z to a-v
+    raw_id = event_data['event'].lower() + event_data['currency'].lower()
+    clean_id = re.sub(r'[^a-v0-9]', '', raw_id)
     
-    # 2. Convert time to a rough ID string (using today's date)
-    # Note: In a real production app, we would use the actual event date.
-    # For this tutorial, we assume the scraper only grabs 'today'.
+    # 2. Add Date to ensure uniqueness
     today_str = datetime.date.today().strftime("%Y%m%d")
     
-    unique_id = f"{today_str}{event_data['currency'].lower()}{clean_title}"
+    # 3. Combine
+    unique_id = f"{today_str}{clean_id}"
     
-    # Google limits IDs to 1024 chars. Truncate if insanely long (rare).
+    # Google limits IDs to 1024 chars. Truncate if insanely long.
     return unique_id[:100]
+
+
+def parse_event_time(time_str):
+    """
+    Converts text like "8:30am" into real ISO timestamps.
+    Returns: (start_iso, end_iso, is_all_day_bool)
+    """
+    today = datetime.date.today()
+    
+    # 1. Handle "All Day" or "Tentative"
+    # If time is missing or vague, default to All Day
+    if not time_str or "day" in time_str.lower() or "tentative" in time_str.lower():
+        return today.isoformat(), today.isoformat(), True
+
+    # 2. Handle specific times (e.g. "8:30am")
+    try:
+        # Parse "8:30am"
+        dt_time = datetime.datetime.strptime(time_str.strip(), "%I:%M%p").time()
+        
+        # Combine with today's date
+        start_dt = datetime.datetime.combine(today, dt_time)
+        
+        # Assume event lasts 1 hour
+        end_dt = start_dt + datetime.timedelta(hours=1)
+        
+        # Return full ISO format
+        return start_dt.isoformat(), end_dt.isoformat(), False
+
+    except ValueError:
+        logger.warning(f"Could not parse time: '{time_str}'. Defaulting to All Day.")
+        return today.isoformat(), today.isoformat(), True
 
 def sync_calendars():
     logger.info("--- Starting Sync Job ---")
@@ -73,8 +104,8 @@ def sync_calendars():
             logger.info(f"Syncing for: {email}")
 
             # --- A. Filter News for this User ---
-            user_impacts = user['impact_pref'].split(',') # e.g. ['High', 'Medium']
-            user_currencies = user['currencies_pref'].split(',') # e.g. ['USD', 'GBP']
+            user_impacts = user['impact_pref'].split(',') 
+            user_currencies = user['currencies_pref'].split(',') 
             
             filtered_events = []
             for event in all_events:
@@ -86,17 +117,14 @@ def sync_calendars():
                 continue
 
             # --- B. Authenticate with Google ---
-            # We reconstruct the Credentials object using the saved Refresh Token
             creds = Credentials(
-                token=None, # We don't have a live access token yet
+                token=None, 
                 refresh_token=user['refresh_token'],
                 token_uri="https://oauth2.googleapis.com/token",
                 client_id=CLIENT_ID,
                 client_secret=CLIENT_SECRET,
                 scopes=['https://www.googleapis.com/auth/calendar.events']
             )
-            
-            # This forces the library to use the refresh_token to get a new access_token
             creds.refresh(Request())
 
             # --- C. Connect to Calendar API ---
@@ -104,12 +132,10 @@ def sync_calendars():
 
             # --- D. Add/Update Events ---
             for item in filtered_events:
-                # Prepare the event data
-                # We need a start/end time. Since ForexFactory gives "8:30am", 
-                # we need to parse that into a real datetime.
-                # For simplicity in this step, we will create "All Day" events or generic times.
                 
-                
+                # 1. Parse the time using our new helper function
+                start_iso, end_iso, is_all_day = parse_event_time(item['time'])
+
                 event_summary = f"{item['currency']} - {item['event']}"
                 event_desc = (
                     f"Impact: {item['impact']}\n"
@@ -120,20 +146,35 @@ def sync_calendars():
                 
                 ev_id = generate_event_id(item)
                 
+                # 2. Construct the Event Body
                 event_body = {
-                    'id': ev_id, # THE KEY to preventing duplicates
+                    'id': ev_id,
                     'summary': event_summary,
                     'description': event_desc,
-                    'start': {'date': datetime.date.today().isoformat()}, # All-day event for now
-                    'end': {'date': datetime.date.today().isoformat()},
-                    'transparency': 'transparent', # "Available" (doesn't block calendar)
-                    'colorId': '11' if item['impact'] == 'High' else '6' # 11=Red, 6=Orange
+                    'transparency': 'transparent', # Doesn't block 'Busy' status
+                    'colorId': '11' if item['impact'] == 'High' else '6'
                 }
+
+                # 3. Assign Time (Date vs DateTime)
+                if is_all_day:
+                    event_body['start'] = {'date': start_iso}
+                    event_body['end'] = {'date': end_iso}
+                else:
+                    # We must specify the Time Zone for non-all-day events.
+                    # Using 'Africa/Johannesburg' since that's where I'm located.
+                    event_body['start'] = {
+                        'dateTime': start_iso, 
+                        'timeZone': 'Africa/Johannesburg' 
+                    }
+                    event_body['end'] = {
+                        'dateTime': end_iso, 
+                        'timeZone': 'Africa/Johannesburg'
+                    }
 
                 try:
                     # Try to insert (create new)
                     service.events().insert(calendarId='primary', body=event_body).execute()
-                    logger.info(f"  Created: {event_summary}")
+                    logger.info(f"  Created: {event_summary} at {item['time']}")
                 except Exception as e:
                     # If error is "already exists", we UPDATE it instead
                     if "already exists" in str(e).lower():
