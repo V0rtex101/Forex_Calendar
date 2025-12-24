@@ -1,24 +1,29 @@
 import os
+import dotenv
 import sqlite3
 import logging
 import flask
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
+dotenv.load_dotenv()
+
 # --- CONFIGURATION ---
 app = flask.Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'super_secret_key_for_session')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY')
 
 # Security Settings for Localhost
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
-CLIENT_SECRETS_FILE = "client_secret.json"
+CLIENT_SECRETS_FILE = os.environ.get('CLIENT_SECRETS_FILE')
+
 SCOPES = [
     'https://www.googleapis.com/auth/calendar.events', 
     'https://www.googleapis.com/auth/userinfo.email'
 ]
-DB_FILE = 'users.db'
+
+DB_FILE = os.environ.get('DB_FILE')
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
