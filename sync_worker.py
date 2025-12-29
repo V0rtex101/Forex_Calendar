@@ -8,16 +8,21 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
-# Import scraper function (kept as get_data per your code)
+# --- IMPORTS ---
+# Make sure your scraper file is named 'get_data.py' or update this import!
 from get_data import get_forex_events
 
 # Load environment variables
 dotenv.load_dotenv()
 
 # --- CONFIGURATION ---
-DB_FILE = os.environ.get('DB_FILE')
+DB_FILE = os.environ.get('DB_FILE', 'users.db')
 CLIENT_ID = os.environ.get('CLIENT_ID')
 CLIENT_SECRET = os.environ.get('CLIENT_SECRET')
+
+# GLOBAL TIMEZONE: Where is the server running?
+# Default to Johannesburg since you are testing on your laptop
+SERVER_TIMEZONE = os.environ.get('SCRAPER_TIMEZONE', 'Africa/Johannesburg')
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,12 +35,11 @@ def get_db_connection():
 
 def generate_event_id(event_data):
     """
-    Creates a unique, consistent ID for Google Calendar.
-    CRITICAL: Google ONLY allows characters 0-9 and a-v. 
-    Letters w, x, y, z are FORBIDDEN and will cause Error 400.
+    Creates a unique ID.
+    Google ONLY allows characters 0-9 and a-v. 
+    Letters w, x, y, z are FORBIDDEN.
     """
     # 1. Clean the title: Remove anything that is NOT a-v or 0-9
-    # We change the regex from a-z to a-v
     raw_id = event_data['event'].lower() + event_data['currency'].lower()
     clean_id = re.sub(r'[^a-v0-9]', '', raw_id)
     
@@ -44,35 +48,28 @@ def generate_event_id(event_data):
     
     # 3. Combine
     unique_id = f"{today_str}{clean_id}"
-    
-    # Google limits IDs to 1024 chars. Truncate if insanely long.
     return unique_id[:100]
-
 
 def parse_event_time(time_str):
     """
-    Converts text like "8:30am" into real ISO timestamps.
+    Converts text like "8:30am" into ISO timestamps.
     Returns: (start_iso, end_iso, is_all_day_bool)
     """
     today = datetime.date.today()
     
     # 1. Handle "All Day" or "Tentative"
-    # If time is missing or vague, default to All Day
     if not time_str or "day" in time_str.lower() or "tentative" in time_str.lower():
         return today.isoformat(), today.isoformat(), True
 
     # 2. Handle specific times (e.g. "8:30am")
     try:
-        # Parse "8:30am"
         dt_time = datetime.datetime.strptime(time_str.strip(), "%I:%M%p").time()
-        
-        # Combine with today's date
         start_dt = datetime.datetime.combine(today, dt_time)
         
-        # Assume event lasts 1 hour
-        end_dt = start_dt + datetime.timedelta(hours=1)
+        # MINIMAL LOOK: Set End Time equal to Start Time
+        # This creates a "0-minute" event that appears as a dot/line
+        end_dt = start_dt 
         
-        # Return full ISO format
         return start_dt.isoformat(), end_dt.isoformat(), False
 
     except ValueError:
@@ -81,6 +78,7 @@ def parse_event_time(time_str):
 
 def sync_calendars():
     logger.info("--- Starting Sync Job ---")
+    logger.info(f"Server Timezone Configured As: {SERVER_TIMEZONE}")
 
     # 1. Get the Fresh News
     logger.info("Fetching news from ForexFactory...")
@@ -133,7 +131,6 @@ def sync_calendars():
             # --- D. Add/Update Events ---
             for item in filtered_events:
                 
-                # 1. Parse the time using our new helper function
                 start_iso, end_iso, is_all_day = parse_event_time(item['time'])
 
                 event_summary = f"{item['currency']} - {item['event']}"
@@ -146,7 +143,6 @@ def sync_calendars():
                 
                 ev_id = generate_event_id(item)
                 
-                # 2. Construct the Event Body
                 event_body = {
                     'id': ev_id,
                     'summary': event_summary,
@@ -155,20 +151,18 @@ def sync_calendars():
                     'colorId': '11' if item['impact'] == 'High' else '6'
                 }
 
-                # 3. Assign Time (Date vs DateTime)
+                # Use the SERVER_TIMEZONE from .env
                 if is_all_day:
                     event_body['start'] = {'date': start_iso}
                     event_body['end'] = {'date': end_iso}
                 else:
-                    # We must specify the Time Zone for non-all-day events.
-                    # Using 'Africa/Johannesburg' since that's where I'm located.
                     event_body['start'] = {
                         'dateTime': start_iso, 
-                        'timeZone': 'Africa/Johannesburg' 
+                        'timeZone': SERVER_TIMEZONE 
                     }
                     event_body['end'] = {
                         'dateTime': end_iso, 
-                        'timeZone': 'Africa/Johannesburg'
+                        'timeZone': SERVER_TIMEZONE 
                     }
 
                 try:
