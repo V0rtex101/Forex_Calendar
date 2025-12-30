@@ -65,8 +65,6 @@ Ini, TOML
 DB_FILE=users.db
 
 # Server Timezone (Where the script is running)
-# Use 'Africa/Johannesburg' for local testing in SA
-# Use 'America/New_York' if deploying to US Cloud Servers
 SCRAPER_TIMEZONE=Africa/Johannesburg
 
 # Flask Security
