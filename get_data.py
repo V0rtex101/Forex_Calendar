@@ -17,17 +17,23 @@ def get_forex_events():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # Fake user agent
+    # Fake user agent to bypass anti-bot checks
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     # --- SMART DRIVER SELECTION ---
-    # This block detects if we are on PythonAnywhere or Local Laptop
     try:
         if "PYTHONANYWHERE_DOMAIN" in os.environ:
             # We are on the Server! Use their pre-installed Chrome.
             print("Detecting PythonAnywhere environment...")
-            chrome_options.binary_location = "/usr/bin/chromium-browser"
+            
+            # --- THE FIX IS HERE ---
+            # Old path: /usr/bin/chromium-browser
+            # New path: /usr/bin/chromium
+            chrome_options.binary_location = "/usr/bin/chromium"
+            
+            # PythonAnywhere's pre-installed ChromeDriver
             service = Service("/usr/bin/chromedriver")
+            
             driver = webdriver.Chrome(service=service, options=chrome_options)
         else:
             # We are on the Laptop! Use the automatic manager.
@@ -90,7 +96,8 @@ def get_forex_events():
         print(f"Error occurred during scraping: {e}")
     finally:
         # Always close the browser to save memory
-        driver.quit()
+        if 'driver' in locals():
+            driver.quit()
         
     return events
 
