@@ -1,205 +1,217 @@
 import os
-import dotenv
-import sqlite3
+import datetime
+import json
 import logging
-import flask
+import dotenv
+from flask import Flask, redirect, url_for, session, render_template_string, request, jsonify
 from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
 
+# Import database helpers from my module
+from database import get_db_connection, init_db 
+
+# Load environment variables
 dotenv.load_dotenv()
 
-# --- CONFIGURATION ---
-app = flask.Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY')
+app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key')
 
-# Security Settings for Localhost
+# Configuration
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CLIENT_SECRETS_FILE = os.path.join(BASE_DIR, 'client_secret.json')
+SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+API_SECRET_KEY = os.environ.get('API_SECRET_KEY')
+
+# Allow HTTP for local testing/development
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
-CLIENT_SECRETS_FILE = os.environ.get('CLIENT_SECRETS_FILE')
+# Initialize DB structure on startup
+init_db()
 
-SCOPES = [
-    'https://www.googleapis.com/auth/calendar.events', 
-    'https://www.googleapis.com/auth/userinfo.email'
-]
+# --- WEB ROUTES ---
 
-DB_FILE = os.environ.get('DB_FILE')
-
-# Configure Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-# --- HELPER: Decides if a box should be checked ---
-def is_checked(value, csv_string):
-    if not csv_string: return ""
-    return "checked" if value in csv_string.split(',') else ""
-
-# --- ROUTE 1: The Login Gate ---
 @app.route('/')
 def index():
-    # If already logged in, go straight to dashboard
-    if 'user_email' in flask.session:
-        return flask.redirect('/dashboard')
+    if 'credentials' not in session:
+        return '<a href="/authorize"><button>Sign In with Google</button></a>'
+    return redirect(url_for('dashboard'))
 
-    return '''
-        <div style="font-family: Arial, sans-serif; text-align: center; margin-top: 100px;">
-            <h1>Forex Calendar Sync</h1>
-            <p>Sign in to manage your news preferences.</p>
-            <a href="/login">
-                <button style="background-color: #4285F4; color: white; padding: 15px 30px; border: none; border-radius: 5px; font-size: 18px; cursor: pointer;">
-                    Sign in with Google
-                </button>
-            </a>
-        </div>
-    '''
-
-# --- ROUTE 2: Google Auth Flow ---
-@app.route('/login')
-def login():
-    flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES)
-    flow.redirect_uri = flask.url_for('callback', _external=True)
+@app.route('/authorize')
+def authorize():
+    flow = Flow.from_client_secrets_file(
+        CLIENT_SECRETS_FILE, scopes=SCOPES)
+    flow.redirect_uri = url_for('oauth2callback', _external=True)
     
-    # We use prompt='consent' to ensure we get a Refresh Token if we don't have one
     authorization_url, state = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
         prompt='consent'
     )
-    
-    flask.session['state'] = state
-    return flask.redirect(authorization_url)
+    session['state'] = state
+    return redirect(authorization_url)
 
 @app.route('/callback')
-def callback():
-    try:
-        state = flask.session['state']
-        flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, state=state)
-        flow.redirect_uri = flask.url_for('callback', _external=True)
-        
-        flow.fetch_token(authorization_response=flask.request.url)
-        creds = flow.credentials
+def oauth2callback():
+    state = session['state']
+    flow = Flow.from_client_secrets_file(
+        CLIENT_SECRETS_FILE, scopes=SCOPES, state=state)
+    flow.redirect_uri = url_for('oauth2callback', _external=True)
 
-        # Get User Email
-        user_info_service = build('oauth2', 'v2', credentials=creds)
-        user_info = user_info_service.userinfo().get().execute()
-        email = user_info['email']
+    authorization_response = request.url
+    # Fix for http vs https mismatch on proxies
+    if request.headers.get('X-Forwarded-Proto') == 'https':
+        authorization_response = authorization_response.replace('http:', 'https:')
 
-        # Database Logic
-        conn = get_db_connection()
-        
-        # 1. Check if user exists
-        user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-        
-        if user:
-            # User exists: Update token ONLY if Google gave us a new one
-            new_token = creds.refresh_token if creds.refresh_token else user['refresh_token']
-            conn.execute("UPDATE users SET refresh_token = ? WHERE email = ?", (new_token, email))
-        else:
-            # New User: Insert with defaults
-            conn.execute('''
-                INSERT INTO users (email, refresh_token, impact_pref, currencies_pref, last_updated)
-                VALUES (?, ?, 'High', 'USD,EUR,GBP', CURRENT_TIMESTAMP)
-            ''', (email, creds.refresh_token))
-        
-        conn.commit()
-        conn.close()
-
-        # Log the user in (Save to Session)
-        flask.session['user_email'] = email
-        return flask.redirect('/dashboard')
-
-    except Exception as e:
-        logger.error(f"Login failed: {e}")
-        return f"Error: {e}"
-
-# --- ROUTE 3: The Dashboard (User Interface) ---
-@app.route('/dashboard')
-def dashboard():
-    # Security Check: Are they logged in?
-    if 'user_email' not in flask.session:
-        return flask.redirect('/')
+    flow.fetch_token(authorization_response=authorization_response)
+    creds = flow.credentials
     
-    email = flask.session['user_email']
+    session['credentials'] = {
+        'token': creds.token,
+        'refresh_token': creds.refresh_token,
+        'token_uri': creds.token_uri,
+        'client_id': creds.client_id,
+        'client_secret': creds.client_secret,
+        'scopes': creds.scopes
+    }
     
-    # Fetch current settings from DB
+    service = build('oauth2', 'v2', credentials=creds)
+    user_info = service.userinfo().get().execute()
+    email = user_info['email']
+    session['email'] = email
+
+    # Store user in database
     conn = get_db_connection()
-    user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-    conn.close()
-
-    if not user:
-        return "Error: User not found in database."
-
-    # Parse settings for the UI
-    impacts = user['impact_pref'] or ""
-    currencies = user['currencies_pref'] or ""
-
-    return f'''
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <h3>⚙️ Settings for {email}</h3>
-                <a href="/logout" style="color:red; text-decoration:none;">Logout</a>
-            </div>
-            <hr>
-            
-            <form action="/save_settings" method="post">
-                <h4>1. Impact Level</h4>
-                <label><input type="checkbox" name="impact" value="High" {is_checked('High', impacts)}> High Impact 🔴</label><br>
-                <label><input type="checkbox" name="impact" value="Medium" {is_checked('Medium', impacts)}> Medium Impact 🟠</label>
-
-                <h4>2. Currencies</h4>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                    <label><input type="checkbox" name="currency" value="USD" {is_checked('USD', currencies)}> USD 🇺🇸</label>
-                    <label><input type="checkbox" name="currency" value="EUR" {is_checked('EUR', currencies)}> EUR 🇪🇺</label>
-                    <label><input type="checkbox" name="currency" value="GBP" {is_checked('GBP', currencies)}> GBP 🇬🇧</label>
-                    <label><input type="checkbox" name="currency" value="JPY" {is_checked('JPY', currencies)}> JPY 🇯🇵</label>
-                    <label><input type="checkbox" name="currency" value="CAD" {is_checked('CAD', currencies)}> CAD 🇨🇦</label>
-                    <label><input type="checkbox" name="currency" value="AUD" {is_checked('AUD', currencies)}> AUD 🇦🇺</label>
-                    <label><input type="checkbox" name="currency" value="NZD" {is_checked('NZD', currencies)}> NZD 🇳🇿</label>
-                    <label><input type="checkbox" name="currency" value="CHF" {is_checked('CHF', currencies)}> CHF 🇨🇭</label>
-                </div>
-                
-                <br>
-                <button type="submit" style="background-color: #0F9D58; color: white; padding: 12px 24px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; width: 100%;">
-                    Save Changes
-                </button>
-            </form>
-        </div>
-    '''
-
-# --- ROUTE 4: Save Actions ---
-@app.route('/save_settings', methods=['POST'])
-def save_settings():
-    if 'user_email' not in flask.session:
-        return flask.redirect('/')
-
-    email = flask.session['user_email']
+    existing_user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
     
-    # Get lists from form
-    impact_list = flask.request.form.getlist('impact')
-    currency_list = flask.request.form.getlist('currency')
-    
-    # Join into strings
-    impact_str = ",".join(impact_list)
-    currency_str = ",".join(currency_list)
-
-    # Update DB
-    conn = get_db_connection()
-    conn.execute("UPDATE users SET impact_pref = ?, currencies_pref = ? WHERE email = ?", 
-                 (impact_str, currency_str, email))
+    if not existing_user:
+        conn.execute('INSERT INTO users (email, refresh_token) VALUES (?, ?)', 
+                     (email, creds.refresh_token))
+    else:
+        if creds.refresh_token:
+            conn.execute('UPDATE users SET refresh_token = ? WHERE email = ?', 
+                         (creds.refresh_token, email))
     conn.commit()
     conn.close()
 
-    return flask.redirect('/dashboard')
+    return redirect(url_for('dashboard'))
 
-@app.route('/logout')
-def logout():
-    flask.session.clear()
-    return flask.redirect('/')
+@app.route('/dashboard', methods=['GET', 'POST'])
+def dashboard():
+    if 'email' not in session:
+        return redirect(url_for('index'))
+    
+    email = session['email']
+    conn = get_db_connection()
+    
+    if request.method == 'POST':
+        # Default to empty string if no checkboxes selected
+        impacts = ",".join(request.form.getlist('impact'))
+        currencies = ",".join(request.form.getlist('currency'))
+        conn.execute('UPDATE users SET impact_pref = ?, currencies_pref = ? WHERE email = ?',
+                     (impacts, currencies, email))
+        conn.commit()
+    
+    user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
+    conn.close()
+    
+    html = """
+    <h1>Welcome {{ user['email'] }}</h1>
+    <form method="post">
+        <h3>Filter Impacts:</h3>
+        <label><input type="checkbox" name="impact" value="High" {% if 'High' in user['impact_pref'] %}checked{% endif %}> High</label>
+        <label><input type="checkbox" name="impact" value="Medium" {% if 'Medium' in user['impact_pref'] %}checked{% endif %}> Medium</label>
+        <br>
+        <h3>Filter Currencies:</h3>
+        {% for curr in ['USD','EUR','GBP','JPY','AUD','CAD','CHF','NZD'] %}
+             <label><input type="checkbox" name="currency" value="{{ curr }}" {% if curr in user['currencies_pref'] %}checked{% endif %}> {{ curr }}</label>
+        {% endfor %}
+        <br><br>
+        <button type="submit">Save Preferences</button>
+    </form>
+    <p>Your calendar will sync automatically every morning.</p>
+    """
+    return render_template_string(html, user=user)
+
+# --- API ENDPOINTS ---
+
+@app.route('/api/receive_news', methods=['POST'])
+def receive_news():
+    # Verify the request comes from our GitHub Action
+    key = request.headers.get('X-API-KEY')
+    if key != API_SECRET_KEY:
+        return jsonify({"error": "Forbidden: Invalid API Key"}), 403
+
+    events = request.json
+    if not events:
+        return jsonify({"message": "No events received"}), 200
+
+    conn = get_db_connection()
+    users = conn.execute("SELECT * FROM users").fetchall()
+    conn.close()
+
+    count = 0
+    errors = []
+
+    # Read client config for OAuth flow
+    with open(CLIENT_SECRETS_FILE) as f:
+        client_config = json.load(f)
+        web_config = client_config.get('web', client_config.get('installed'))
+
+    for user in users:
+        try:
+            # Skip if user has no preferences set
+            if not user['impact_pref'] or not user['currencies_pref']:
+                continue
+
+            user_impacts = user['impact_pref'].split(',')
+            user_currencies = user['currencies_pref'].split(',')
+            
+            my_events = [e for e in events if e['impact'] in user_impacts and e['currency'] in user_currencies]
+            if not my_events: continue
+
+            creds = Credentials(
+                token=None, 
+                refresh_token=user['refresh_token'],
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=web_config['client_id'],
+                client_secret=web_config['client_secret'],
+                scopes=['https://www.googleapis.com/auth/calendar.events']
+            )
+            creds.refresh(Request())
+            service = build('calendar', 'v3', credentials=creds)
+
+            for item in my_events:
+                # Generate unique ID for the event
+                raw_id = f"{datetime.date.today()}{item['currency']}{item['event']}"
+                uid = ''.join(c for c in raw_id if c.isalnum()).lower()[:50]
+
+                # Parse Time
+                dt_time = datetime.datetime.strptime(item['time'].strip(), "%I:%M%p").time()
+                start_dt = datetime.datetime.combine(datetime.date.today(), dt_time)
+                
+                # 0-Minute Event (Visual Marker)
+                body = {
+                    'id': uid,
+                    'summary': f"{item['currency']} - {item['event']}",
+                    'description': f"Impact: {item['impact']}\nForecast: {item['forecast']}\nActual: {item['actual']}",
+                    'start': {'dateTime': start_dt.isoformat(), 'timeZone': 'Africa/Johannesburg'},
+                    'end': {'dateTime': start_dt.isoformat(), 'timeZone': 'Africa/Johannesburg'},
+                    'colorId': '11' if item['impact'] == 'High' else '6'
+                }
+                
+                try:
+                    service.events().insert(calendarId='primary', body=body).execute()
+                except Exception:
+                    # Update existing event if ID conflict occurs
+                    service.events().update(calendarId='primary', eventId=uid, body=body).execute()
+            
+            count += 1
+        except Exception as e:
+            errors.append(f"User {user['email']}: {str(e)}")
+
+    return jsonify({"status": "success", "users_synced": count, "errors": errors}), 200
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    app.run(host='0.0.0.0', port=80)
