@@ -9,7 +9,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_FILE = 'users.db'
+# Use absolute path to ensure the database is found correctly on the server
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, 'users.db')
+
+def get_db_connection():
+    """
+    Creates and returns a connection to the database.
+    Used by app.py to query user data.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row  # Access columns by name
+    return conn
 
 def init_db():
     """
