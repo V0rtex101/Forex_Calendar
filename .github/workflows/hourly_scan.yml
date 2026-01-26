@@ -1,0 +1,34 @@
+name: Hourly Forex Scout
+
+on:
+  push:
+  
+  schedule:
+    # Run at minute 0 of every hour (00:00, 01:00, 02:00, etc.)
+    - cron: '0 * * * *'
+  
+  # Keeps the "Run Now" button for testing
+  workflow_dispatch:
+
+jobs:
+  scrape-and-send:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests selenium webdriver-manager
+
+      - name: Run Scraper & Sender
+        env:
+          # This pulls the password from your GitHub Secrets
+          API_SECRET_KEY: ${{ secrets.API_SECRET_KEY }}
+        run: python sender.py
