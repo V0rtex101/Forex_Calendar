@@ -1,117 +1,96 @@
-📈 Forex Factory to Google Calendar Sync
-Automate your trading schedule. This full-stack application scrapes high-impact economic news from ForexFactory and syncs it directly to your Google Calendar. It handles timezone conversions, prevents duplicates, and allows users to filter by currency and impact level.
+# Forex Calendar Sync 📉➡️📅
 
-✨ Features
-Automated Scraper: Fetches daily economic news (CPI, NFP, GDP, etc.) from ForexFactory using a headless Chrome browser.
+![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
+![Flask](https://img.shields.io/badge/Flask-2.0+-green.svg)
+![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Automated-yellow.svg)
+![Status](https://img.shields.io/badge/Status-Production-success.svg)
 
-Smart Sync: Prevents duplicate events and updates existing ones if data changes.
+**Forex Calendar Sync** is a hybrid-cloud application that automates the tracking of economic news events. It scrapes high-impact financial data from ForexFactory and synchronizes it directly to your Google Calendar, filtering by currency and impact level.
 
-User Dashboard: Web interface to log in with Google and configure preferences (e.g., "Only show USD & GBP High Impact news").
+## 🚀 Features
 
-Timezone Aware: Automatically converts news times from the server location (e.g., New York) to the user's local Google Calendar time.
+* **Automated Scraper:** Runs hourly via GitHub Actions to fetch real-time data.
+* **Smart Updates:** Updates calendar events with "Actual" data values as soon as news is released.
+* **User Dashboard:** A secure web interface to manage sync preferences.
+* **Custom Filters:**
+    * **Impact:** Select High (Red) or Medium (Orange) impact events.
+    * **Currencies:** Filter by major pairs (USD, EUR, GBP, JPY, etc.).
+* **Security:** Uses Google OAuth 2.0 for secure, token-based authentication (no passwords stored).
 
-Minimalist UI: Events appear as 0-minute "markers" on the calendar to avoid cluttering your schedule.
+---
 
-🛠️ Tech Stack
-Frontend/Server: Flask (Python)
+## 🏗 System Architecture
 
-Database: SQLite (Stores user preferences and OAuth tokens)
+This project utilizes a **Hybrid Cloud** architecture to maximize uptime and minimize costs.
 
-Scraping: Selenium & Webdriver Manager (Headless Chrome)
+1.  **Data Collection Service (GitHub Actions):**
+    * Runs `sender.py` on a scheduled cron job (hourly).
+    * Uses Selenium to scrape specific financial data points from ForexFactory.
+    * Transmits the data payload securely to the Backend Server via a REST API.
 
-APIs: Google OAuth2 & Google Calendar API
+2.  **Backend Server (PythonAnywhere):**
+    * Hosts the Flask Application (`app.py`).
+    * Manages the SQLite database of users, preferences, and OAuth refresh tokens.
+    * Validates incoming data and distributes relevant events to subscribed users.
 
-🚀 Setup Guide (Local Machine)
-1. Prerequisites
-Python 3.x installed.
+3.  **External Integration (Google Calendar API):**
+    * Receives API calls from the Backend Server to create or update events on the user's primary calendar.
+    * Ensures data is formatted correctly for the user's specific timezone.
 
-Google Chrome installed.
+---
 
-A Google Cloud Project with the Calendar API enabled.
+## 🛠️ Installation & Local Setup
 
-2. Installation
-Clone the repository and install dependencies:
+### Prerequisites
+* Python 3.10+
+* A Google Cloud Project with Calendar API enabled.
+* `client_secret.json` from Google Cloud Console.
 
-Bash
+### 1. Clone the Repository
 
-git clone https://github.com/yourusername/forex-calendar-sync.git
+git clone [https://github.com/your-username/forex-calendar-sync.git](https://github.com/your-username/forex-calendar-sync.git)
 cd forex-calendar-sync
-
-# Create virtual environment (Optional but recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install libraries
-pip install pandas selenium webdriver-manager google-auth google-auth-oauthlib google-api-python-client python-dotenv flask
-3. Google Cloud Configuration
-Go to the Google Cloud Console.
-
-Create a Project and enable the Google Calendar API.
-
-Go to Credentials -> Create Credentials -> OAuth Client ID.
-
-Application Type: Web Application.
-
-Redirect URI: http://localhost:5000/callback (for local testing).
-
-Download the JSON file, rename it to client_secret.json, and place it in the project root.
-
-4. Environment Variables
-Create a file named .env in the project folder and add the following:
+### 2. Install Dependencies
+pip install -r requirements.txt
+### 3. Environment Configuration
+Create a .env file in the root directory:
 
 Ini, TOML
+#### Flask Security
+FLASK_SECRET_KEY=your_random_string_here
 
-# Database Config
-DB_FILE=users.db
-
-# Server Timezone (Where the script is running)
-SCRAPER_TIMEZONE=Africa/Johannesburg
-
-# Flask Security
-FLASK_SECRET_KEY=super_secret_random_string
-5. Run the Application
-Step A: Start the Website (Dashboard)
-
-Bash
-
+#### API Security (Must match between Server and Scraper)
+API_SECRET_KEY=your_secure_api_password
+### 4. Run Locally
 python app.py
-Visit http://localhost:5000 in your browser.
 
-Log in with Google and save your preferences.
+The web dashboard will launch at http://localhost:5000.
+Note: You must add http://localhost:5000/callback to your Google Cloud Redirect URIs for local testing.
 
-Step B: Run the Sync Worker Open a new terminal and run:
+## ☁️ Deployment Guide
+### Part 1: The Server (PythonAnywhere)
+Upload app.py, database.py, requirements.txt, and .env to PythonAnywhere.
 
-Bash
+Upload your Google client_secret.json to the same directory.
 
-python sync_worker.py
-The script will scrape ForexFactory and populate your Google Calendar based on your saved settings.
+Set up a virtual environment and install dependencies.
 
-☁️ Deployment (PythonAnywhere)
-This project is optimized for deployment on PythonAnywhere (Free Tier).
+Configure the WSGI file to point to your app.
 
-Upload Files: Upload app.py, sync_worker.py, get_data.py, client_secret.json, and .env.
+Important: Add https://your-username.pythonanywhere.com/callback to Google Cloud Redirect URIs.
 
-Update .env: Set SCRAPER_TIMEZONE=America/New_York (or UTC) depending on the server location.
+### Part 2: The Scraper (GitHub Actions)
+Ensure .github/workflows/hourly_scan.yml is present in the repository.
 
-Google Credentials: Update your Google Cloud Console Redirect URI to https://yourusername.pythonanywhere.com/callback.
+Go to repository Settings > Secrets and variables > Actions.
 
-Schedule Task: Set a daily task to run python3 sync_worker.py at 06:00 UTC.
+Add a new secret named API_SECRET_KEY.
 
-Note: The scraper automatically detects the PythonAnywhere environment and switches to the correct headless Chrome settings.
+Set the value to match the password in your server's .env file.
 
-📂 Project Structure
-app.py - The Flask web server (Login & Dashboard).
+## 🛡️ Security & Privacy
+OAuth 2.0: We never see or store your Google password. We only store a refresh_token to access the calendar.
 
-sync_worker.py - The logic that reads the DB, runs the scraper, and talks to Google.
+Data Isolation: User data is stored in a local SQLite database (users.db) and is not shared with third parties.
 
-get_data.py - The Selenium scraper that browses ForexFactory.
-
-users.db - SQLite database (Created automatically on first run).
-
-client_secret.json - Your private Google API keys (DO NOT COMMIT THIS).
-
-⚠️ Disclaimer
-
-This tool is for educational and personal use. ForexFactory data is owned by Fair Economy, Inc. Ensure you comply with their terms of service regarding automated access.
-
-Created by Fulufhelo Mulaudzi
+Account Deletion: Users can unsubscribe and delete all their data immediately via the Dashboard "Danger Zone."
